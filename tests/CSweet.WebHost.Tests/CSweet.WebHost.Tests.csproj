@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
+<ItemGroup>
+<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+<PackageReference Include="xunit" Version="2.9.3" />
+<PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+<ProjectReference Include="../../src/CSweet.WebHost.Core/CSweet.WebHost.Core.csproj" />
+<ProjectReference Include="../../../CSweet.Office.Contracts/src/CSweet.Office.Contracts/CSweet.Office.Contracts.csproj" Condition="'$(UseLocalOfficeContracts)' == 'true'" />
+<PackageReference Include="CSweet.Office.Contracts" Version="0.5.1" Condition="'$(UseLocalOfficeContracts)' != 'true'" />
+<ProjectReference Include="../../src/CSweet.WebHost.ProductGuest/CSweet.WebHost.ProductGuest.csproj" /><ProjectReference Include="../../src/CSweet.WebHost.Runtime.HyperV/CSweet.WebHost.Runtime.HyperV.csproj" /><ProjectReference Include="../../src/CSweet.WebHost.Node/CSweet.WebHost.Node.csproj" /><Using Include="Xunit" />
+</ItemGroup></Project>

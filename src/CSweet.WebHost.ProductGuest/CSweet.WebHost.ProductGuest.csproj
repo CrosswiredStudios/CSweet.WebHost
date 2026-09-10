@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup><ItemGroup>
+<ProjectReference Include="../CSweet.WebHost.Core/CSweet.WebHost.Core.csproj" />
+<ProjectReference Include="../../../CSweet.Isolation/src/CSweet.Isolation.HyperV/CSweet.Isolation.HyperV.csproj" Condition="'$(UseLocalIsolation)' == 'true'" />
+<PackageReference Include="CSweet.Isolation.HyperV" Version="0.1.0" Condition="'$(UseLocalIsolation)' != 'true'" />
+</ItemGroup></Project>

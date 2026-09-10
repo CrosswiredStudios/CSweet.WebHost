@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "mode": "containers",
+  "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifactDigest": null,
+  "compose": {
+    "services": {
+      "app": {
+        "build": {
+          "context": ".",
+          "dockerfile": "Dockerfile"
+        },
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "node",
+            "healthcheck.js"
+          ],
+          "interval": "5s",
+          "timeout": "2s",
+          "retries": 10
+        }
+      }
+    }
+  },
+  "entrypoint": {
+    "service": "app",
+    "port": 8080,
+    "healthPath": "/health"
+  },
+  "resources": {
+    "cpuCount": 2,
+    "memoryMb": 4096,
+    "diskMb": 10240,
+    "maximumProcesses": 512,
+    "maximumLogBytes": 16777216
+  },
+  "lifetimeSeconds": 7200,
+  "connectionIds": []
+}

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>
+<ProjectReference Include="../CSweet.WebHost.Core/CSweet.WebHost.Core.csproj" />
+<ProjectReference Include="../../../CSweet.Isolation/src/CSweet.Isolation.HyperV/CSweet.Isolation.HyperV.csproj" Condition="'$(UseLocalIsolation)' == 'true'" />
+<ProjectReference Include="../../../CSweet.Isolation/src/CSweet.Isolation.Artifacts/CSweet.Isolation.Artifacts.csproj" Condition="'$(UseLocalIsolation)' == 'true'" />
+<PackageReference Include="CSweet.Isolation.HyperV" Version="0.1.0" Condition="'$(UseLocalIsolation)' != 'true'" />
+<PackageReference Include="CSweet.Isolation.Artifacts" Version="0.1.0" Condition="'$(UseLocalIsolation)' != 'true'" />
+</ItemGroup></Project>

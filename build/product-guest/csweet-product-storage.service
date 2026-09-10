@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare disposable product storage and read-only authorization media
+Before=docker.service containerd.service csweet-product-guest.service
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/opt/csweet-product/prepare-storage.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

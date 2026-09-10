@@ -1,0 +1,17 @@
+[Unit]
+Description=CSweet isolated product guest
+Requires=csweet-product-storage.service docker.service
+After=csweet-product-storage.service docker.service
+[Service]
+Type=simple
+ExecStart=/opt/csweet-product/CSweet.WebHost.ProductGuest
+WorkingDirectory=/run/csweet-product
+Environment=DOTNET_EnableDiagnostics=0
+Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=/run/csweet-product/dotnet
+Restart=no
+KillMode=control-group
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+[Install]
+WantedBy=multi-user.target
