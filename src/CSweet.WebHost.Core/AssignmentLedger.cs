@@ -12,6 +12,8 @@ public sealed class AssignmentLedger(DurableState state, AssignmentVerifier veri
         var digest = WorkloadAuthorizationEnvelope.Digest(Convert.ToBase64String(assignment.Payload()));
         return await state.TransactionAsync(data =>
         {
+            if (data.StoppedWorkloads.Contains(assignment.WorkloadId))
+                throw new UnauthorizedAccessException("A stopped workload cannot be launched or replayed.");
             if (data.Assignments.TryGetValue(assignment.AssignmentId, out var existing))
             {
                 if (existing.PayloadDigest == digest) return false;

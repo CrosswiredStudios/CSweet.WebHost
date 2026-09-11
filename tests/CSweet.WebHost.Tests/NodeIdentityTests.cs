@@ -33,6 +33,14 @@ public sealed class NodeIdentityTests
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => new WebHostMessageSigner(other, identity, new DurableState(directory), clock)
                 .HeartbeatAsync(heartbeat with { WebHostId = other.Enrollment.Id }, default));
             clock.Now = bootstrap.IdentityExpiresAt;
+            var expiredSigner = new WebHostMessageSigner(bootstrap, identity, new DurableState(directory), clock);
+            foreach (var action in new[] { "poll", "result" })
+            {
+                var cleanup = await expiredSigner.SignAsync(action, new { cleanup = true }, default);
+                WebHostIdentity.Verify(cleanup, bootstrap.ControlPlaneId, bootstrap.Enrollment.Id, publicKey, second.Sequence, clock.Now, action);
+                Assert.Equal(clock.Now.AddMinutes(1), cleanup.ExpiresAt);
+            }
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => expiredSigner.SignAsync("artifact", new { }, default));
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => new WebHostMessageSigner(bootstrap, identity, new DurableState(directory), clock)
                 .HeartbeatAsync(heartbeat, default));
         }

@@ -30,10 +30,7 @@ All dependencies and images must already exist in the input or certified cache; 
 connection brokering has not been implemented and requests needing it fail closed.
 
 Guest HTTP forwarding has one constant destination: its localhost entry service on port 18080.
-It strips credentials, cookies, forwarding and host headers. Response redirects and cookies are
-not propagated. Static and container responses are bounded to 4 MiB per response currently.
-Streaming large game assets, range responses and WebSockets remain required before general
-game demos are supported.
+It strips Headquarters credentials and forwarding headers. Product cookies use a separate validated collection. Responses are bounded to 4 MiB per exchange, with contiguous ranges for assets up to 256 MiB and bounded WebSocket frames. The gateway validates redirect destinations and maintains a separate private-access cookie.
 
 The host associates every guest diagnostic with its canonical assignment, build, project and
 source revision. Guest-provided identities cannot select another project. Diagnostics are
@@ -43,7 +40,7 @@ These records remain evidence, not agent instructions. See [enrollment and evide
 
 ## Certified image installation inputs
 
-The build/product-guest files are provisioning inputs, not a finished or certified VM image.
+The build/product-guest offline builder consumes a hash-pinned Linux base and trusted published ProductGuest/BrowserProbe payloads. See image-build.md. Its output still requires exact-image real-VM certification.
 The image builder must provide a supported Linux kernel with Hyper-V VSOCK, Docker and its
 Compose plugin, the published ProductGuest binary and these service units. The immutable root
 must be mounted read-only from boot, with precreated /media mount points and /var/lib/docker
@@ -106,5 +103,4 @@ not block polling the others. Service shutdown cancels the sweep.
 
 This is best-effort collection of the guest's bounded ring, not lossless telemetry. A guest dying before
 polling, a burst exceeding the ring, an initialization that never returns, or a host/storage failure can
-still lose evidence. The existing seven-day export survives teardown. Headquarters ingestion, health
-reconciliation, browser telemetry and automatic ticket routing are still required.
+still lose evidence. The existing seven-day export survives teardown. Headquarters ingestion, lifecycle reconciliation, browser telemetry and assigned-agent ticket routing are connected in 0.2.0; see enrollment.md.

@@ -124,18 +124,28 @@ public sealed class ProductRpcWorker(RuntimeHostConfiguration config,HyperVProdu
                     ?? throw new InvalidDataException("A product command is required.");
                 if (command.RequestId != control.CommandId || command.Kind != control.Action)
                     throw new UnauthorizedAccessException("The control body does not match its authorization.");
-                timeout.CancelAfter(command.Kind=="initialize" ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(60));
+                timeout.CancelAfter(command.Kind=="initialize" ? TimeSpan.FromMinutes(10) : command.Kind == "http" ? TimeSpan.FromSeconds(35) : TimeSpan.FromSeconds(60));
                 if (command.Kind == "evidence")
                     response = new("Evidence", Evidence: await diagnostics.ReadAsync(control.WorkloadId,
                         command.DiagnosticAfterSequence, token: timeout.Token));
-                else if (command.Kind=="stop")
+                else if (command.Kind == "renew")
+                    response = new("Completed", Guest: await provider.RenewAsync(control.WorkloadId, command, timeout.Token));
+                else if (command.Kind == "reconcile")
+                    response = await provider.ReconcileAsync(control.WorkloadId, timeout.Token);
+                else if (command.Kind == "stop")
                 {
-                    var handle=await provider.FindHandleAsync(control.WorkloadId,timeout.Token)
-                        ?? throw new UnauthorizedAccessException("The product workload is unknown.");
-                    await provider.StopAndDestroyAsync(handle,timeout.Token);
-                    response=new("Stopped",handle);
-                }
-                else response=new("Completed",Guest:await provider.ExchangeAsync(control.WorkloadId,command,diagnostics,timeout.Token));
+                    // Capture a final bounded snapshot when possible; teardown never depends on guest cooperation.
+                    try
+                    {
+                        using var finalCapture = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                        finalCapture.CancelAfter(TimeSpan.FromSeconds(2));
+                        await provider.CollectDiagnosticsAsync(control.WorkloadId, diagnostics, finalCapture.Token);
+                    }
+                    catch (Exception captureError) when (captureError is IOException or UnauthorizedAccessException or
+                        InvalidOperationException or ArgumentException or JsonException or OperationCanceledException or System.Net.Sockets.SocketException) { }
+                    await provider.StopWorkloadAsync(control.WorkloadId, timeout.Token);
+                    response = new("Stopped");
+                }                else response=new("Completed",Guest:await provider.ExchangeAsync(control.WorkloadId,command,diagnostics,timeout.Token));
             }
             else throw new InvalidDataException("Exactly one signed runtime operation is required.");
             await ProductGuestProtocol.WriteAsync(pipe,response,timeout.Token);

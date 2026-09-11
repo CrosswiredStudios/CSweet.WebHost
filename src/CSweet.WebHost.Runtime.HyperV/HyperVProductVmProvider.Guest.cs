@@ -60,7 +60,7 @@ public sealed partial class HyperVProductVmProvider
                     diagnostic.OccurredAt < assignment.IssuedAt || diagnostic.OccurredAt > clock.GetUtcNow().AddSeconds(30))
                     throw new InvalidDataException("Invalid product diagnostic metadata.");
                 var hash = SHA256.HashData(Encoding.UTF8.GetBytes(assignment.AssignmentId.ToString("N")+":"+diagnostic.Sequence));
-                var source = diagnostic.Source == "build" ? "build" : "runtime";
+                var source = diagnostic.Source == "build" ? "build" : diagnostic.Source == "browser" ? "browser" : "runtime";
                 evidence.Add(new(new Guid(hash.AsSpan(0,16)),workloadId,spec.ProjectId,spec.BuildId,
                     spec.Manifest.SourceRevision,diagnostic.Service,source,diagnostic.Code,diagnostic.Summary,
                     diagnostic.OccurredAt,false));

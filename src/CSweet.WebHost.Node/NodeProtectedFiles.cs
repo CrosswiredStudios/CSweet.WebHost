@@ -20,6 +20,32 @@ internal static class NodeProtectedFiles
         }
     }
 
+    public static void VerifyStateDirectory(string path)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        if (!Path.IsPathFullyQualified(path)) throw new InvalidDataException("The Node state directory must be installed at an absolute path.");
+        var directory = new DirectoryInfo(path);
+        if (!directory.Exists || directory.LinkTarget is not null) throw new InvalidDataException("The protected Node state directory is unavailable.");
+        var security = directory.GetAccessControl();
+        var current = WindowsIdentity.GetCurrent().User;
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner is null || !(owner.IsWellKnown(WellKnownSidType.LocalSystemSid) || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)))
+            throw new UnauthorizedAccessException("The Node state directory must be installed by an administrator.");
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+        {
+            if ((rule.PropagationFlags & PropagationFlags.InheritOnly) != 0 || rule.AccessControlType != AccessControlType.Allow) continue;
+            var sid = (SecurityIdentifier)rule.IdentityReference;
+            if (sid == current || sid.IsWellKnown(WellKnownSidType.LocalSystemSid) || sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)) continue;
+            if ((rule.FileSystemRights & (FileSystemRights.ReadData | FileSystemRights.Write | FileSystemRights.Delete |
+                FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership)) != 0)
+                throw new UnauthorizedAccessException("The Node state is accessible to an untrusted identity.");
+        }
+        for (var parent = directory.Parent; parent is not null; parent = parent.Parent)
+        {
+            if (parent.LinkTarget is not null) throw new InvalidDataException("The Node state ancestors cannot use links.");
+            VerifyRules(parent.GetAccessControl(), parent: true);
+        }
+    }
     private static void VerifySecret(FileSystemSecurity security)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();

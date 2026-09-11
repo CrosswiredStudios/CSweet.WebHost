@@ -32,7 +32,7 @@ public sealed class GuestBoundaryTests
             }
         return (path, "sha256:" + Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))));
     }
-    private static ProductGuestBoot Boot(string digest, PreviewMode mode = PreviewMode.Static)
+    private static ProductGuestBoot Boot(string digest, PreviewMode mode = PreviewMode.Static, Action<ECDsa, ProductGuestBoot>? capture = null)
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var enrollment = new WebHostEnrollment(Guid.NewGuid(), "test", "key", Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), Now);
@@ -46,7 +46,7 @@ public sealed class GuestBoundaryTests
         var assignment = new SignedProductAssignment(1, enrollment.Id, Guid.NewGuid(), Guid.NewGuid(), 1,
             HyperVProductVmProvider.Id, json, WorkloadAuthorizationEnvelope.Digest(json), "key", "", Now, Now.AddHours(2));
         assignment = assignment with { SignatureBase64 = Convert.ToBase64String(key.SignData(assignment.Payload(), HashAlgorithmName.SHA256)) };
-        return new(1, enrollment, assignment);
+        var result = new ProductGuestBoot(1, enrollment, assignment); capture?.Invoke(key, result); return result;
     }
     private sealed class Commands : IGuestCommandRunner
     {
@@ -176,5 +176,119 @@ public sealed class GuestBoundaryTests
         foreach (var invalid in new[] { valid with { Purpose="CSweet.Office" },valid with { Controls=[] },
             valid with { ExpiresAt=Now },valid with { GuestImageDigest="sha256:"+new string('c',64) } })
             Assert.Throws<UnauthorizedAccessException>(() => ProductCertificationVerifier.Verify(Sign(invalid),pub,valid.ProviderId,valid.ProviderVersion,digest,Now));
+    }
+    [Fact] public async Task Large_static_assets_support_bounded_ranges_head_and_unsatisfied_ranges()
+    {
+        var root = Root(); var content = new string('x', ProductGuestProtocol.MaximumHttpBodyBytes + 17);
+        var archive = Archive(root, ("site/index.html", content, 0));
+        await using var guest = new ProductGuestSession(Boot(archive.Digest), archive.Path, root, new Commands(), new Clock());
+        Assert.Equal(PreviewPhase.Ready, (await guest.HandleAsync(new(Guid.NewGuid(), "initialize"), default)).Phase);
+        async Task<GuestHttpResponse> Request(string method, string? range = null) => (await guest.HandleAsync(new(Guid.NewGuid(), "http",
+            new(method, "/", range is null ? new Dictionary<string,string>() : new Dictionary<string,string> { ["Range"] = range }, [])), default)).Http!;
+        var head = await Request("HEAD"); Assert.Equal(content.Length.ToString(), head.Headers["Content-Length"]); Assert.Empty(head.Body);
+        var first = await Request("GET", "bytes=0-4194303"); Assert.Equal(206, first.StatusCode); Assert.Equal(4194304, first.Body.Length);
+        var last = await Request("GET", "bytes=4194304-8388607"); Assert.Equal(206, last.StatusCode); Assert.Equal(17, last.Body.Length);
+        Assert.Equal(first.Headers["ETag"], last.Headers["ETag"]);
+        Assert.Equal(413, (await Request("GET")).StatusCode);
+        Assert.Equal(416, (await Request("GET", "bytes=99999999-")).StatusCode);
+        Assert.Equal(416, (await Request("GET", "bytes=0-1,4-5")).StatusCode);
+        Assert.Equal(3, (await Request("GET", "bytes=-3")).Body.Length);
+    }    [Theory]
+    [InlineData("connect", 0, "game")]
+    [InlineData("open", 65537, "game")]
+    [InlineData("open", 0, "game\r\nCookie: stolen")]
+    public void WebSockets_reject_unknown_operations_oversized_messages_and_protocol_injection(string operation, int length, string protocol) =>
+        Assert.Throws<InvalidDataException>(() => ProductGuestProtocol.ValidateHttp(new("GET", "/socket", new Dictionary<string,string>(),
+            new byte[length], Socket: new(operation, Guid.NewGuid(), [protocol]))));
+
+    [Fact] public async Task Container_WebSocket_round_trip_uses_fixed_guest_loopback_and_bounded_messages()
+    {
+        // The test server occupies the same guest-only port as the normalized container ingress.
+        using var listener = new HttpListener(); listener.Prefixes.Add("http://127.0.0.1:18080/"); listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var server = Task.Run(async () =>
+        {
+            var context = await listener.GetContextAsync().WaitAsync(timeout.Token);
+            Assert.Equal("/socket", context.Request.RawUrl); Assert.Equal("game", context.Request.Headers["Sec-WebSocket-Protocol"]);
+            Assert.Null(context.Request.Headers["Authorization"]); Assert.Equal("session=product", context.Request.Headers["Cookie"]);
+            var accepted = await context.AcceptWebSocketAsync("game"); using var socket = accepted.WebSocket;
+            var bytes = new byte[64]; var received = await socket.ReceiveAsync(bytes.AsMemory(), timeout.Token);
+            Assert.Equal(System.Net.WebSockets.WebSocketMessageType.Text, received.MessageType);
+            await socket.SendAsync(bytes.AsMemory(0, received.Count), received.MessageType, true, timeout.Token);
+            await Task.Delay(300, timeout.Token);
+        }, timeout.Token);
+        var root = Root(); var archive = Archive(root, ("source/Dockerfile", "FROM scratch", 0));
+        await using var guest = new ProductGuestSession(Boot(archive.Digest, PreviewMode.Containers), archive.Path, root, new Commands(), new Clock(), new Handler());
+        Assert.Equal(PreviewPhase.Ready, (await guest.HandleAsync(new(Guid.NewGuid(), "initialize"), timeout.Token)).Phase);
+        var id = Guid.NewGuid();
+        async Task<GuestHttpResponse> Operation(string operation, byte[]? data = null) => (await guest.HandleAsync(new(Guid.NewGuid(), "http",
+            new("GET", "/socket", new Dictionary<string,string> { ["Authorization"] = "Bearer never-forward" }, data ?? [],
+                new Dictionary<string,string> { ["session"] = "product" }, new(operation, id, operation == "open" ? ["game"] : null))), timeout.Token)).Http!;
+        var opened = await Operation("open"); Assert.Equal("game", opened.Headers["X-CSweet-Socket-Protocol"]);
+        await Operation("send-text", Encoding.UTF8.GetBytes("hello"));
+        GuestHttpResponse response;
+        do { response = await Operation("receive"); if (response.Headers["X-CSweet-Socket-State"] == "open") await Task.Delay(10, timeout.Token); }
+        while (response.Headers["X-CSweet-Socket-State"] == "open");
+        Assert.Equal("message", response.Headers["X-CSweet-Socket-State"]); Assert.Equal("hello", Encoding.UTF8.GetString(response.Body));
+        await Operation("close"); Assert.Equal("closed", (await Operation("receive")).Headers["X-CSweet-Socket-State"]);
+        await server;
+    }
+    [Fact] public async Task Signed_renewal_preserves_the_guest_and_rejects_changed_resource_authority()
+    {
+        var root = Root(); var archive = Archive(root, ("site/index.html", "same instance", 0));
+        SignedProductAssignment next = null!, escalated = null!;
+        var boot = Boot(archive.Digest, capture: (key, initial) =>
+        {
+            var spec = JsonSerializer.Deserialize<ProductWorkloadSpecification>(initial.Assignment.SpecificationJson, PreviewJson.Options)!;
+            SignedProductAssignment Sign(ProductWorkloadSpecification value)
+            {
+                var json = JsonSerializer.Serialize(value, PreviewJson.Options);
+                var assignment = initial.Assignment with { SpecificationJson = json, SpecificationDigest = WorkloadAuthorizationEnvelope.Digest(json),
+                    ExpiresAt = Now.AddHours(3), FencingEpoch = 2, SignatureBase64 = "" };
+                return assignment with { SignatureBase64 = Convert.ToBase64String(key.SignData(assignment.Payload(), HashAlgorithmName.SHA256)) };
+            }
+            next = Sign(spec with { Manifest = spec.Manifest with { LifetimeSeconds = 10800 } });
+            escalated = Sign(spec with { Manifest = spec.Manifest with { LifetimeSeconds = 10800, Resources = ResourceBudget.Default with { CpuCount = 8 } } });
+        });
+        var clock = new Clock(); var commands = new Commands();
+        await using var guest = new ProductGuestSession(boot, archive.Path, root, commands, clock);
+        await guest.HandleAsync(new(Guid.NewGuid(), "initialize"), default);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guest.HandleAsync(new(Guid.NewGuid(), "renew", Renewal: escalated), default));
+        await guest.HandleAsync(new(Guid.NewGuid(), "renew", Renewal: next), default);
+        await guest.HandleAsync(new(Guid.NewGuid(), "renew", Renewal: next), default);
+        clock.Current = Now.AddHours(2).AddSeconds(1);
+        var page = await guest.HandleAsync(new(Guid.NewGuid(), "http", new("GET", "/", new Dictionary<string,string>(), [])), default);
+        Assert.Equal("same instance", Encoding.UTF8.GetString(page.Http!.Body)); Assert.Empty(commands.Calls);
+        clock.Current = Now.AddHours(3);
+        Assert.Equal("LeaseExpired", (await guest.HandleAsync(new(Guid.NewGuid(), "status"), default)).FailureCode);
+    }
+    private sealed class BrowserRunner(bool fail) : IGuestBrowserRunner
+    {
+        public int Calls { get; private set; }
+        public Task<IReadOnlyList<PreviewBrowserCheckResult>> RunAsync(PreviewMode mode, IReadOnlyList<PreviewBrowserCheck> checks, CancellationToken token)
+        {
+            Calls++; Assert.Equal(PreviewMode.Static, mode);
+            if (fail) throw new IOException("password=runner-private-error");
+            return Task.FromResult<IReadOnlyList<PreviewBrowserCheckResult>>([
+                new(0, false, "BrowserAssertionFailed", "password=browser-private-error")]);
+        }
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Browser_failures_preserve_page_context_without_secrets_and_reject_external_checks(bool fail)
+    {
+        var root = Root(); var archive = Archive(root, ("site/index.html", "game", 0)); var runner = new BrowserRunner(fail);
+        await using var guest = new ProductGuestSession(Boot(archive.Digest), archive.Path, root, new Commands(), new Clock(), browserRunner: runner);
+        await guest.HandleAsync(new(Guid.NewGuid(), "initialize"), default);
+        await Assert.ThrowsAsync<InvalidDataException>(() => guest.HandleAsync(new(Guid.NewGuid(), "test", Checks: [new("https://external.example/")]), default));
+        Assert.Equal(0, runner.Calls);
+        var response = await guest.HandleAsync(new(Guid.NewGuid(), "test", Checks: [new("/game?token=private-query", "#play")]), default);
+        Assert.False(Assert.Single(response.TestResults!).Passed); Assert.Equal(1, runner.Calls);
+        Assert.Equal(PreviewPhase.Ready, response.Phase);
+        var evidence = await guest.HandleAsync(new(Guid.NewGuid(), "diagnostics"), default);
+        var json = JsonSerializer.Serialize(evidence.Diagnostics, PreviewJson.Options);
+        Assert.Contains("/game", json); Assert.Contains("#play", json);
+        Assert.DoesNotContain("private-query", json); Assert.DoesNotContain("browser-private-error", json); Assert.DoesNotContain("runner-private-error", json);
     }
 }

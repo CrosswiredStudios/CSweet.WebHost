@@ -1,66 +1,33 @@
-# Independent WebHost enrollment
+# Independent WebHost enrollment and installation
 
-This is implemented transport and registration code, not an installed or certified hosting release.
-No inbound management listener is exposed by Node.
+Node connects outbound to Headquarters over HTTPS. RuntimeHost is a separate privileged Windows service; the unprivileged Node exchanges only signed envelopes, verified artifact bytes and bounded results over its protected pipe.
 
-## Owner and installer flow
+## Operator setup
 
-1. Install the optional Web Previews plugin in the business. Registration checks its current installation
-   and organization grant; disabling the plugin disables subsequent heartbeats.
-2. The hardened installer provisions a dedicated Node account and a fresh ECDSA P-256 operational identity.
-   Keep the private key on that host. It is distinct from Office credentials, agent identities,
-   Headquarters workload-signing keys and release-certification keys.
-3. A current human business owner registers the public key with
-   POST /api/core/organizations/{organizationId}/web-hosts/.
-   The request contains requestId, providerInstallationId, displayName, identityPublicKeyBase64,
-   maximumCapacity and expiresAt. Use a stable requestId for retries; changed terms or a previously used
-   identity key are rejected. Identity expiry is bounded to 90 days.
-4. Headquarters must have CSweet:WebHost:ControlPlaneId, AuthorizationVerificationKeyId and
-   AuthorizationVerificationPublicKeyBase64 configured by its operator. No fallback signing key is generated.
-   Registration returns a WebHostBootstrap with the assigned host ID, business, control-plane audience,
-   identity expiry and public workload-verification material. These are public configuration values.
-5. The installer writes ProgramData/CSweet/WebHost/node.json with headquartersOrigin, bootstrap,
-   identityPrivateKeyPath and stateRoot. It writes the matching enrollment into the separate protected
-   runtime-host.json configuration. Node cannot change the privileged runtime's trust anchors.
-6. Run CSweet.WebHost.Node run under the dedicated Node account. It reads the SYSTEM-owned runtime pipe,
-   signs a heartbeat and posts it over HTTPS every 30 seconds. RuntimeHost must already be installed;
-   its service registration/recovery and real certification remain release work.
-7. Owners can list registrations or POST /{hostId}/revoke. Revocation disables the host identity and
-   preview access immediately in Headquarters, while retaining Stopping jobs until physical teardown is
-   confirmed. Independent VM leases remain the disconnected-host backstop. Stop delivery is still pending.
+1. Install the Web Previews plugin in the business. Configure Headquarters CSweet:WebHost:ControlPlaneId, AuthorizationVerificationKeyId and AuthorizationVerificationPublicKeyBase64. The public key must match Execution:AuthorizationSigningKeyPem, supplied through protected operator configuration. Keep the private key out of tracked settings.
+2. Set Execution:ReleaseVerificationPublicKeyBase64 to the independent release authority, and populate Execution:ApprovedReleases with the signed certificates for the exact approved runtime/image. Leave Execution:Enabled false until setup and acceptance are complete. Self-reported host certification is insufficient.
+3. Configure Gateway:HeadquartersOrigin and Gateway:PreviewHostSuffix under CSweet:WebHost. Use a separate registrable site, e.g. https://hq.example.com and preview.example.net. Configure wildcard DNS and TLS for *.preview.example.net to the API. Do not share Headquarters cookies or authentication middleware with product origins. The preview middleware terminates those requests before Headquarters routing.
+4. On the dedicated host, prepare a separate ECDSA P-256 operational identity. Keep its private key on that host. The business owner POSTs requestId, providerInstallationId, displayName, identityPublicKeyBase64, maximumCapacity and expiresAt to /api/core/organizations/{organizationId}/web-hosts/. Stable request IDs make registration retries idempotent. Identity lifetime is at most 90 days.
+5. Save the returned WebHostBootstrap. Publish the Windows Node and RuntimeHost payloads in the hardened release workflow. Supply the independently certified Linux guest VHDX and exact runtime payload. See [acceptance](acceptance.md).
+6. Review and run scripts/Install-WebHost.ps1 as an administrator on a fresh dedicated Hyper-V host. It requires the runtime and Node publish directories, image, signed certificate, pinned release public-key file, bootstrap, identity private-key file and exact Headquarters HTTPS origin. It validates the certificate before mutation, rejects unsafe paths/ancestor replacement permissions, sets explicit ACLs, creates separate SYSTEM/virtual-account services, registers the dedicated guest socket, and configures service recovery. It does not start services or launch VMs.
+7. Review protected configuration under ProgramData/CSweet/WebHost, then start CSweet.WebHost.RuntimeHost followed by CSweet.WebHost.Node. Verify Node status and the owner host inventory. Apply the Headquarters migration through the normal deployment process, configure wildcard routing, and complete acceptance before enabling admission.
 
-The Node configuration and identity files must be administrator/SYSTEM-owned and protected against
-replacement by other accounts, including through parent directories. The private key is readable only
-by the Node account, SYSTEM and administrators. The state directory is dedicated to Node, separate from
-RuntimeHost protected state. Preserve it across restarts. Recovery from lost sequence state requires
-a fresh owner-approved enrollment rather than resetting Headquarters replay history.
+The fresh-host installer deliberately refuses an existing installation. Upgrade requires draining previews, preserving Node sequence state and reviewing the exact new certified release. Lost identity sequence state requires fresh owner enrollment; do not reset Headquarters replay history.
 
-## Authentication boundary
+## Business and agent flow
 
-Signed heartbeats bind a WebHost-specific purpose, control-plane audience, host, request ID, monotonically
-increasing sequence, action, exact body digest and a maximum 60-second validity window. Headquarters
-consumes the sequence with an optimistic database concurrency token; replay and stale concurrent
-requests cannot both commit. Node reserves each sequence durably before sending. Lost responses consume
-a sequence; subsequent heartbeats use a new one.
+The owner approves exact project hosting terms in the existing Approvals inbox. An authorized consuming agent preflights a successful BuildId plus immutable source manifest, starts with a stable key, polls the operation and reads diagnostics. Headquarters verifies every artifact and signs only current granted work. Static artifacts contain site files; container artifacts contain verified source/ files and offline images/*.tar inputs.
 
-The transport requires the exact HTTPS Headquarters origin, normal certificate validation, no redirects,
-no proxy, no cookies and no inherited/default credentials. Both request and response bodies and read
-times are bounded. The heartbeat endpoint has a per-source request limit and independently verifies
-the signed host identity instead of accepting browser, agent or Office authentication.
+The Web Previews page appears only for businesses with the plugin. Team members see previews in their current project scope. The Open action mints a one-use, one-minute POST ticket. Its separate browser cookie lasts at most 30 minutes and never longer than the preview lease. Each request, range chunk and WebSocket operation rechecks membership and execution authority. Product cookies are separate and cannot replace the gateway cookie.
 
-Connected is inventory status only. Self-reported Certified=true never authorizes execution.
-Registration views and receipts report ExecutionReady=false until independently verified certification,
-transactional scheduling, signed dispatch and artifact provenance are connected.
+Owners can assign Software QA 0.7.0, a project board and a parent planning item for triage. The assigned agent reads canonical retained findings, uses its approved model, and files a deduplicated ticket only through ordinary board-scoped work-item permission. Evidence is copied into the ticket before the seven-day diagnostic retention window expires.
 
-## Evidence flow implemented in RuntimeHost
+## Revocation, recovery and retention
 
-A signed diagnostics command captures live guest logs into canonical, sanitized host records.
-A separately signed evidence command reads those records without requiring a live VM.
-Its ProductGuestRequest includes diagnosticAfterSequence; pages contain at most 100 events with
-host-assigned sequences and NextSequence/HasMore continuation. Each event retains its exact preview,
-project, build and source revision. Raw guest diagnostics are not forwarded to Node.
+Owners can revoke a host through /web-hosts/{hostId}/revoke or revoke standing hosting access in Approvals. Browser access closes on the next checked operation; stopping jobs retain their quota until protected teardown is acknowledged. Native hard/idle expiry remains active while Headquarters or Node is disconnected.
 
-Evidence expires seven days after the event, and replay cannot extend that window. Reads exclude expired
-events immediately; an independent hourly worker removes expired records and finding references even
-when Headquarters is disconnected. Headquarters ingestion and triage/ticket attachment must copy
-authorized evidence before expiry. That downstream integration is still pending.
+Signed heartbeat, poll, artifact and result exchanges bind audience, host, purpose, exact body, monotonic sequence and a maximum 60-second message lifetime. Node durably reserves sequence numbers, persists outcomes before acknowledgement and never repeats a VM mutation after an uncertain result. Headquarters reconciles stale commands. Expired/revoked host identities permit only cleanup polling, reconciliation, retained evidence and teardown acknowledgements; they cannot obtain artifacts or start products.
+
+RuntimeHost collects bounded diagnostics independently, including a best-effort final capture before teardown. Headquarters sanitizes and binds evidence to the preview/project/build/source. Runtime and Headquarters retain raw evidence for seven days. Completed transport records retain acknowledgement digests, not diagnostic payload copies; HTTP payloads are discarded after delivery or bounded timeout cleanup. Ticket evidence deliberately survives runtime retention.
+
+No services, real VMs, release certificates or public deployments were created by development verification. Build scheduling through the certified toolchain, in-place renewal and bounded headless browser jobs are implemented. Include the new operations in reviewed standing grants; older approvals do not automatically expand. See image-build.md and acceptance.md for operational release gates.

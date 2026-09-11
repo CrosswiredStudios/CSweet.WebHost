@@ -35,6 +35,7 @@ try
                 using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 requestTimeout.CancelAfter(TimeSpan.FromMinutes(10));
                 var response = await session.HandleAsync(request, requestTimeout.Token);
+                if (request.Kind == "renew" && response.Phase == PreviewPhase.Ready) lifetime.CancelAfter(session.ExpiresAt - DateTimeOffset.UtcNow);
                 await ProductGuestProtocol.WriteAsync(connection.Output, response, lifetime.Token);
                 if (response.Phase == PreviewPhase.Stopped) return 0;
             }

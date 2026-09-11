@@ -20,3 +20,7 @@ mount -t ext4 -o nosuid,nodev /dev/sdb /run/csweet-product
 mkdir -p /run/csweet-product/docker /run/csweet-product/containerd /run/csweet-product/home /run/csweet-product/docker-config
 mount --bind /run/csweet-product/docker /var/lib/docker
 mount --bind /run/csweet-product/containerd /var/lib/containerd
+
+mkdir -p /run/csweet-product/browser
+chown 65532:65532 /run/csweet-product/browser
+chmod 700 /run/csweet-product/browser

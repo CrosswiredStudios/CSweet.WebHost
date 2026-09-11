@@ -20,7 +20,7 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
     AssignmentVerifier verifier, TimeProvider clock) : IProductVmProvider, IProductDiagnosticSource
 {
     public const string Id = "webhost-hyperv-gen2";
-    public const string Version = "0.1.0";
+    public const string Version = "0.2.0";
     private string InstancesRoot => Path.Combine(ProtectedRoot(configuration.StateRoot), "instances");
 
     public async Task<ProductProviderStatus> ProbeAsync(CancellationToken token)
@@ -64,6 +64,8 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
         // The lock covers physical host admission, VM creation, and committed metadata.
         await using var held = await LockAsync(token);
         verifier.Verify(assignment); // Waiting for physical admission must not outlive authorization.
+        if (await new DurableState(configuration.StateRoot).TransactionAsync(data => data.StoppedWorkloads.Contains(assignment.WorkloadId), token))
+            throw new UnauthorizedAccessException("This workload was stopped before physical admission.");
         var records = await ReadRecordsAsync(token);
         if (records.Any(x => x.AssignmentId == assignment.AssignmentId || x.WorkloadId == assignment.WorkloadId))
             throw new InvalidOperationException("This product identity already has protected VM history; reconcile it instead of relaunching.");

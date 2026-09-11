@@ -54,6 +54,8 @@ public sealed class WebHostState
 {
     public Guid? NodeIdentityHostId { get; set; }
     public long NodeSequence { get; set; }
+    public Dictionary<Guid, string> NodeCommandResults { get; set; } = [];
+    public HashSet<Guid> StoppedWorkloads { get; set; } = [];
     public Dictionary<Guid, DateTimeOffset> ControlCommands { get; set; } = [];
     public Dictionary<Guid, PreviewOperation> Operations { get; set; } = [];
     public Dictionary<Guid, string> RequestDigests { get; set; } = [];

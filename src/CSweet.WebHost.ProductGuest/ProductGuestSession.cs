@@ -5,9 +5,11 @@ using CSweet.WebHost.Core;
 
 namespace CSweet.WebHost.ProductGuest;
 
-public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPath, string scratchRoot,
-    IGuestCommandRunner commands, TimeProvider clock, HttpMessageHandler? httpHandler = null) : IAsyncDisposable
+public sealed partial class ProductGuestSession(ProductGuestBoot boot, string artifactPath, string scratchRoot,
+    IGuestCommandRunner commands, TimeProvider clock, HttpMessageHandler? httpHandler = null, IGuestBrowserRunner? browserRunner = null) : IAsyncDisposable
 {
+    public DateTimeOffset ExpiresAt => currentAssignment.ExpiresAt;
+    private SignedProductAssignment currentAssignment = boot.Assignment;
     private readonly List<GuestDiagnostic> diagnostics = [];
     private readonly HttpClient http = new(httpHandler ?? new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false,
         UseCookies = false, MaxResponseHeadersLength = 32 }) { Timeout = TimeSpan.FromSeconds(30) };
@@ -23,12 +25,13 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
     private static readonly HashSet<string> ForwardRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
         { "Accept", "Accept-Language", "Content-Type", "Content-Encoding", "Range", "If-None-Match", "If-Modified-Since" };
     private static readonly HashSet<string> ForwardResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
-        { "Content-Type", "Content-Encoding", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Cache-Control" };
+        { "Content-Type", "Content-Encoding", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Cache-Control", "Content-Length" };
 
     public async Task<ProductGuestResponse> HandleAsync(ProductGuestRequest request, CancellationToken token)
     {
+        SweepSockets();
         if (request.RequestId == Guid.Empty) throw new InvalidDataException("A product request identity is required.");
-        if (clock.GetUtcNow() >= boot.Assignment.ExpiresAt)
+        if (clock.GetUtcNow() >= currentAssignment.ExpiresAt)
         {
             phase = PreviewPhase.Expired;
             return new(request.RequestId, request.Kind, phase, FailureCode: "LeaseExpired");
@@ -44,6 +47,20 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
                         InvalidOperationException or JsonException or HttpRequestException or ArgumentException)
                     { phase = PreviewPhase.Failed; AddDiagnostic("runtime", "guest", "StartFailed", error.Message); }
                 }
+                return new(request.RequestId, request.Kind, phase);
+            case "test":
+                if (phase != PreviewPhase.Ready) throw new InvalidOperationException("Browser tests require a ready preview.");
+                BrowserTestPolicy.Validate(request.Checks);
+                IReadOnlyList<PreviewBrowserCheckResult> results;
+                try { results = await (browserRunner ?? new GuestBrowserRunner()).RunAsync(specification!.Manifest.Mode, request.Checks!, token); }
+                catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+                { results = request.Checks!.Select((_, i) => new PreviewBrowserCheckResult(i, false, "BrowserRunnerFailed", "The guest browser runner could not complete this check.")).ToArray(); }
+                foreach (var result in results.Where(x => !x.Passed)) AddDiagnostic("browser", "browser", result.Code, BrowserTestPolicy.FailureSummary(request.Checks![result.Index], result));
+                return new(request.RequestId, request.Kind, phase, TestResults: results);
+            case "renew":
+                if (phase != PreviewPhase.Ready) throw new InvalidOperationException("Only a ready preview can be renewed.");
+                specification = ProductRenewal.Validate(currentAssignment, request.Renewal ?? throw new InvalidDataException("A signed renewal is required."), new(boot.Enrollment, clock));
+                currentAssignment = request.Renewal!;
                 return new(request.RequestId, request.Kind, phase);
             case "status":
                 return new(request.RequestId, request.Kind, phase);
@@ -64,9 +81,9 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
                 if (phase != PreviewPhase.Ready || request.Http is null)
                     return new(request.RequestId, request.Kind, phase, FailureCode: "PreviewNotReady");
                 ProductGuestProtocol.ValidateHttp(request.Http);
-                var response = specification!.Manifest.Mode == PreviewMode.Static
+                var response = request.Http.Socket is not null ? await SocketAsync(request.Http, token) : specification!.Manifest.Mode == PreviewMode.Static
                     ? await StaticAsync(request.Http, token) : await ForwardAsync(request.Http, token);
-                if (response.StatusCode >= 500) AddDiagnostic("http", specification.Manifest.Entrypoint?.Service ?? "site",
+                if (response.StatusCode >= 500) AddDiagnostic("http", specification!.Manifest.Entrypoint?.Service ?? "site",
                     "HttpServerError", "The preview returned HTTP " + response.StatusCode + ".");
                 return new(request.RequestId, request.Kind, phase, Http: response);
             case "stop":
@@ -78,7 +95,7 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
     private async Task InitializeAsync(CancellationToken token)
     {
         if (boot.Version != 1) throw new InvalidDataException("Unsupported product boot protocol.");
-        specification = new AssignmentVerifier(boot.Enrollment, clock).Verify(boot.Assignment);
+        specification = new AssignmentVerifier(boot.Enrollment, clock).Verify(currentAssignment);
         if (specification.Kind != ProductWorkloadKind.Preview)
             throw new InvalidDataException("This guest entry point accepts preview workloads only.");
         if (specification.Manifest.ConnectionIds.Count != 0)
@@ -164,6 +181,8 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
                 if (!message.Headers.TryAddWithoutValidation(header.Key, header.Value))
                     message.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
+        if (request.ProductCookies is { Count: > 0 })
+            message.Headers.TryAddWithoutValidation("Cookie", string.Join("; ", request.ProductCookies.Select(x => x.Key + "=" + x.Value)));
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
         var headers = response.Headers.Concat(response.Content.Headers)
             .Where(x => ForwardResponseHeaders.Contains(x.Key))
@@ -178,7 +197,9 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
                 throw new InvalidDataException("The preview response exceeds its transfer limit.");
             await output.WriteAsync(buffer.AsMemory(0, read), token);
         }
-        return new((int)response.StatusCode, headers, output.ToArray());
+        var cookies = response.Headers.TryGetValues("Set-Cookie", out var values) ? values.Take(33).ToArray() : [];
+        if (cookies.Length > 32 || cookies.Sum(x => (long)x.Length) > 32768) throw new InvalidDataException("Product response cookies exceed their bound.");
+        return new((int)response.StatusCode, headers, output.ToArray(), cookies);
     }
     private async Task<GuestHttpResponse> StaticAsync(GuestHttpRequest request, CancellationToken token)
     {
@@ -193,7 +214,7 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
             return new(404, new Dictionary<string, string>(), []);
         var file = new FileInfo(target);
         if (!file.Exists) return new(404, new Dictionary<string, string>(), []);
-        if (file.Length > ProductGuestProtocol.MaximumHttpBodyBytes)
+        if (file.Length > 256L * 1024 * 1024)
             return new(413, new Dictionary<string, string>(), []);
         var type = file.Extension.ToLowerInvariant() switch
         {
@@ -203,8 +224,39 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
             ".jpg" or ".jpeg" => "image/jpeg", ".webp" => "image/webp", ".ogg" => "audio/ogg",
             ".mp3" => "audio/mpeg", ".woff2" => "font/woff2", _ => "application/octet-stream"
         };
-        return new(200, new Dictionary<string, string> { ["Content-Type"] = type },
-            request.Method == "HEAD" ? [] : await File.ReadAllBytesAsync(target, token));
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Content-Type"] = type, ["Accept-Ranges"] = "bytes", ["Content-Length"] = file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            // The immutable archive digest binds every file for the whole preview lifetime.
+            ["ETag"] = "\"" + specification!.Manifest.ArtifactDigest + "\""
+        };
+        if (request.Headers.TryGetValue("If-None-Match", out var etag) && etag == headers["ETag"])
+            return new(304, headers, []);
+        if (request.Method == "HEAD") return new(200, headers, []);
+        long start = 0, end = file.Length - 1;
+        var partial = request.Headers.TryGetValue("Range", out var range);
+        if (partial)
+        {
+            var invalid = new GuestHttpResponse(416, new Dictionary<string, string> { ["Content-Range"] = "bytes */" + file.Length }, []);
+            if (!System.Net.Http.Headers.RangeHeaderValue.TryParse(range, out var parsed) || parsed.Unit != "bytes" || parsed.Ranges.Count != 1)
+                return invalid;
+            var item = parsed.Ranges.Single();
+            if (item.From is null)
+            {
+                if (item.To is not > 0) return invalid;
+                start = Math.Max(0, file.Length - item.To.Value);
+            }
+            else { start = item.From.Value; end = Math.Min(end, item.To ?? end); }
+            if (start > end || start >= file.Length) return invalid;
+        }
+        if (end - start + 1 > ProductGuestProtocol.MaximumHttpBodyBytes)
+            return new(413, headers, []); // Gateway assembles bounded ranges; no unbounded guest frame.
+        var content = new byte[Math.Max(0, end - start + 1)];
+        await using var input = File.OpenRead(target); input.Position = start;
+        await input.ReadExactlyAsync(content, token);
+        headers["Content-Length"] = content.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (partial) headers["Content-Range"] = $"bytes {start}-{end}/{file.Length}";
+        return new(partial ? 206 : 200, headers, content);
     }
     private void AddDiagnostic(string source, string service, string code, string text)
     {
@@ -224,6 +276,7 @@ public sealed class ProductGuestSession(ProductGuestBoot boot, string artifactPa
     }
     public async ValueTask DisposeAsync()
     {
+        foreach (var socket in sockets.Values) socket.Dispose(); sockets.Clear();
         http.Dispose();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try { await StopAsync(timeout.Token); } catch (Exception error) when (error is IOException or OperationCanceledException) { }

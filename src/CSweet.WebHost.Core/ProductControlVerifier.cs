@@ -9,7 +9,7 @@ public sealed class ProductControlVerifier(WebHostEnrollment enrollment, Durable
     {
         var now = clock.GetUtcNow();
         if (command.Version != 1 || command.WebHostId != enrollment.Id || command.CommandId == Guid.Empty ||
-            command.WorkloadId == Guid.Empty || command.Action is not ("initialize" or "status" or "diagnostics" or "evidence" or "http" or "stop") ||
+            command.WorkloadId == Guid.Empty || command.Action is not ("initialize" or "status" or "reconcile" or "diagnostics" or "evidence" or "http" or "stop" or "renew" or "test") ||
             command.BodyJson is not { Length: > 0 and <= ProductGuestProtocol.MaximumFrameBytes } ||
             command.SigningKeyId != enrollment.VerificationKeyId || string.IsNullOrWhiteSpace(command.SignatureBase64) ||
             command.IssuedAt > now || command.ExpiresAt <= now || command.ExpiresAt <= command.IssuedAt ||

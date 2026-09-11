@@ -24,24 +24,9 @@ public static class NodeService
         identity.ImportFromPem(await File.ReadAllTextAsync(config.IdentityPrivateKeyPath, token));
         WebHostIdentity.ValidatePublicKey(Convert.ToBase64String(identity.ExportSubjectPublicKeyInfo()));
         using var headquarters = new HeadquartersClient(new Uri(config.HeadquartersOrigin, UriKind.Absolute));
-        var signer = new WebHostMessageSigner(config.Bootstrap, identity, new DurableState(config.StateRoot), TimeProvider.System);
-        var runtime = new RuntimeHostClient();
-        using var interval = new PeriodicTimer(TimeSpan.FromSeconds(30));
-        do
-        {
-            try
-            {
-                var status = (await runtime.InvokeAsync(new(Inspect: true), null, token)).Status
-                    ?? throw new InvalidDataException("The protected runtime did not return its inventory.");
-                var signed = await signer.HeartbeatAsync(status, token);
-                await headquarters.HeartbeatAsync(signed, token);
-            }
-            catch (Exception error) when (!token.IsCancellationRequested &&
-                error is HttpRequestException or IOException or InvalidOperationException or UnauthorizedAccessException or OperationCanceledException)
-            {
-                // Do not emit credentials, product diagnostics or remote response bodies to the operator log.
-                Console.Error.WriteLine("WebHost could not refresh its Headquarters heartbeat. Existing VM leases remain independently enforced.");
-            }
-        } while (await interval.WaitForNextTickAsync(token));
+        NodeProtectedFiles.VerifyStateDirectory(config.StateRoot);
+        var state = new DurableState(config.StateRoot);
+        var signer = new WebHostMessageSigner(config.Bootstrap, identity, state, TimeProvider.System);
+        await new NodeDispatchLoop(signer, headquarters, new RuntimeHostClient(), state).RunAsync(token);
     }
 }

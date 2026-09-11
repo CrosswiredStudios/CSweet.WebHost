@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk"><ItemGroup>
 <ProjectReference Include="$(CSweetWebHostContractsRepositoryRoot)/src/CSweet.WebHost.Contracts/CSweet.WebHost.Contracts.csproj" Condition="'$(UseLocalWebHostContracts)' == 'true'" />
-<PackageReference Include="CSweet.WebHost.Contracts" Version="0.1.0" Condition="'$(UseLocalWebHostContracts)' != 'true'" />
+<PackageReference Include="CSweet.WebHost.Contracts" Version="0.3.0" Condition="'$(UseLocalWebHostContracts)' != 'true'" />
 </ItemGroup></Project>

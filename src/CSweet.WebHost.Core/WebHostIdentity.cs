@@ -10,12 +10,12 @@ public static class WebHostIdentity
         using var key = ImportPublicKey(publicKeyBase64);
     }
     public static void Verify(SignedWebHostMessage message, Guid controlPlaneId, Guid webHostId,
-        string publicKeyBase64, long lastSequence, DateTimeOffset now)
+        string publicKeyBase64, long lastSequence, DateTimeOffset now, string expectedAction = "heartbeat")
     {
         if (message.Version != 1 || controlPlaneId == Guid.Empty || message.ControlPlaneId != controlPlaneId ||
             webHostId == Guid.Empty || message.WebHostId != webHostId || message.RequestId == Guid.Empty ||
-            message.Sequence <= lastSequence || message.Sequence < 1 || message.Action != "heartbeat" ||
-            message.BodyJson is not { Length: > 0 and <= 1048576 } ||
+            message.Sequence <= lastSequence || message.Sequence < 1 || message.Action != expectedAction || expectedAction is not ("heartbeat" or "poll" or "result" or "artifact") ||
+            (message.BodyJson is not { Length: > 0 } || message.BodyJson.Length > (expectedAction == "result" ? 12 * 1024 * 1024 : 1048576)) ||
             !WorkloadAuthorizationEnvelope.IsDigest(message.BodyDigest) ||
             WorkloadAuthorizationEnvelope.Digest(message.BodyJson) != message.BodyDigest ||
             message.IssuedAt > now.AddSeconds(5) || message.ExpiresAt <= now ||

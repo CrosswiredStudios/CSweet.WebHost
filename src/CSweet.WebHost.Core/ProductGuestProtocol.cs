@@ -7,11 +7,12 @@ namespace CSweet.WebHost.Core;
 // Public verification material only; delivered by the privileged host on separate read-only boot media.
 public sealed record ProductGuestBoot(int Version, WebHostEnrollment Enrollment, SignedProductAssignment Assignment);
 public sealed record ProductGuestRequest(Guid RequestId, string Kind, GuestHttpRequest? Http = null,
-    long DiagnosticAfterSequence = 0);
+    long DiagnosticAfterSequence = 0, SignedProductAssignment? Renewal = null, IReadOnlyList<PreviewBrowserCheck>? Checks = null);
 public sealed record ProductGuestResponse(Guid RequestId, string Kind, PreviewPhase Phase,
-    GuestHttpResponse? Http = null, IReadOnlyList<GuestDiagnostic>? Diagnostics = null, string? FailureCode = null);
-public sealed record GuestHttpRequest(string Method, string Path, IReadOnlyDictionary<string, string> Headers, byte[] Body);
-public sealed record GuestHttpResponse(int StatusCode, IReadOnlyDictionary<string, string> Headers, byte[] Body);
+    GuestHttpResponse? Http = null, IReadOnlyList<GuestDiagnostic>? Diagnostics = null, string? FailureCode = null, IReadOnlyList<PreviewBrowserCheckResult>? TestResults = null);
+public sealed record GuestHttpRequest(string Method, string Path, IReadOnlyDictionary<string, string> Headers, byte[] Body, IReadOnlyDictionary<string, string>? ProductCookies = null, GuestSocketOperation? Socket = null);
+public sealed record GuestSocketOperation(string Operation, Guid ConnectionId, IReadOnlyList<string>? Subprotocols = null);
+public sealed record GuestHttpResponse(int StatusCode, IReadOnlyDictionary<string, string> Headers, byte[] Body, IReadOnlyList<string>? SetCookies = null);
 public sealed record GuestDiagnostic(long Sequence, string Source, string Service, string Code, string Summary, DateTimeOffset OccurredAt);
 
 public static class ProductGuestProtocol
@@ -44,6 +45,12 @@ public static class ProductGuestProtocol
             request.Path.Any(char.IsControl) || request.Headers is null || request.Headers.Count > 64 ||
             request.Body is null || request.Body.Length > MaximumHttpBodyBytes)
             throw new InvalidDataException("The preview HTTP request is invalid.");
+        if (request.Socket is { } socket && (request.Method != "GET" || socket.ConnectionId == Guid.Empty ||
+            socket.Operation is not ("open" or "receive" or "send-text" or "send-binary" or "close") || request.Body.Length > 65536 ||
+            socket.Subprotocols is { } protocols && (protocols.Count > 16 || protocols.Any(x => x is not { Length: > 0 and <= 128 } ||
+                x.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_' or '.')))))) throw new InvalidDataException("Invalid product WebSocket operation.");
+        if (request.ProductCookies is { } cookies && (cookies.Count > 32 || cookies.Sum(x => (long)x.Key.Length + (x.Value?.Length ?? 0)) > 16384 ||
+            cookies.Any(x => !ValidCookie(x.Key, x.Value)))) throw new InvalidDataException("Invalid product cookies.");
         foreach (var header in request.Headers)
             if (string.IsNullOrWhiteSpace(header.Key) || header.Key.Length > 128 || header.Value is null ||
                 header.Value.Length > 8192 || header.Key.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
@@ -52,4 +59,6 @@ public static class ProductGuestProtocol
         if (request.Headers.Sum(x => (long)x.Key.Length + x.Value.Length) > 32768)
             throw new InvalidDataException("The preview HTTP headers exceed their limit.");
     }
-}
+    public static bool ValidCookie(string name, string? value) => name.Length is > 0 and <= 128 &&
+        name.All(c => char.IsAsciiLetterOrDigit(c) || "!#$%&'*+-.^_`|~".Contains(c)) && value is { Length: <= 4096 } &&
+        value.All(c => c is >= '!' and <= '~' && c is not ('"' or ',' or ';' or '\\'));}
