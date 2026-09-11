@@ -34,8 +34,24 @@ public static partial class DiagnosticSanitizer
 public sealed class DiagnosticStore(DurableState state, TimeProvider clock)
 {
     public static readonly TimeSpan Retention = TimeSpan.FromDays(7);
-    public Task<PreviewFinding> RecordAsync(PreviewDiagnostic diagnostic, IEnumerable<string> knownSecrets,
-        CancellationToken token = default)
+    public async Task<PreviewFinding> RecordAsync(PreviewDiagnostic diagnostic, IEnumerable<string> knownSecrets,
+        CancellationToken token = default) => (await RecordBatchAsync([diagnostic], knownSecrets, token))[0];
+
+    /// <summary>A guest snapshot is committed atomically. Replays do not duplicate or extend evidence.</summary>
+    public Task<IReadOnlyList<PreviewFinding>> RecordBatchAsync(IReadOnlyList<PreviewDiagnostic> diagnostics,
+        IEnumerable<string> knownSecrets, CancellationToken token = default)
+    {
+        if (diagnostics.Count is < 1 or > 256) throw new ArgumentException("Diagnostic batches contain 1 to 256 events.");
+        var secrets = knownSecrets.ToArray();
+        var clean = diagnostics.Select(diagnostic => Clean(diagnostic, secrets)).ToArray();
+        return state.TransactionAsync<IReadOnlyList<PreviewFinding>>(data =>
+        {
+            Prune(data, clock.GetUtcNow());
+            return clean.Select(diagnostic => RecordClean(data, diagnostic)).ToArray();
+        }, token);
+    }
+
+    private PreviewDiagnostic Clean(PreviewDiagnostic diagnostic, string[] secrets)
     {
         if (diagnostic.Id == Guid.Empty || diagnostic.PreviewId == Guid.Empty || diagnostic.ProjectId == Guid.Empty ||
             diagnostic.BuildId == Guid.Empty || diagnostic.Source is not ("build" or "runtime" or "browser") ||
@@ -44,41 +60,38 @@ public sealed class DiagnosticStore(DurableState state, TimeProvider clock)
             diagnostic.OccurredAt > clock.GetUtcNow().AddSeconds(30) ||
             diagnostic.OccurredAt <= clock.GetUtcNow() - Retention)
             throw new ArgumentException("Diagnostics require a recent exact preview, project, build, revision and evidence source.");
-        var secrets = knownSecrets.ToArray();
-        var clean = diagnostic with
+        return diagnostic with
         {
             Summary = DiagnosticSanitizer.Sanitize(diagnostic.Summary, secrets),
             Service = DiagnosticSanitizer.Sanitize(diagnostic.Service, secrets, 128),
             Code = DiagnosticSanitizer.Sanitize(diagnostic.Code, secrets, 128),
             Truncated = diagnostic.Truncated || diagnostic.Summary.Length > 4096
         };
-        return state.TransactionAsync(data =>
-        {
-            Prune(data, clock.GetUtcNow());
-            var fingerprint = DiagnosticSanitizer.Fingerprint(clean);
-            if (data.Diagnostics.TryGetValue(clean.Id, out var prior))
-            {
-                if (prior != clean) throw new InvalidOperationException("Diagnostic identity was reused with different evidence.");
-                return data.Findings[DiagnosticSanitizer.Fingerprint(prior)];
-            }
-            if (data.Diagnostics.Count >= 10000) throw new InvalidOperationException("Diagnostic storage budget exhausted.");
-            data.Diagnostics.Add(clean.Id, clean);
-            data.DiagnosticSequences.Add(clean.Id, checked(++data.LastDiagnosticSequence));
-            // Replaying an event must never extend its retention window.
-            data.DiagnosticRetainUntil.Add(clean.Id, clean.OccurredAt + Retention);
-            var finding = data.Findings.TryGetValue(fingerprint, out var existing)
-                ? existing with
-                {
-                    FirstSeen = clean.OccurredAt < existing.FirstSeen ? clean.OccurredAt : existing.FirstSeen,
-                    LastSeen = clean.OccurredAt > existing.LastSeen ? clean.OccurredAt : existing.LastSeen,
-                    Occurrences = checked(existing.Occurrences + 1), DiagnosticIds = [..existing.DiagnosticIds, clean.Id]
-                }
-                : new PreviewFinding(fingerprint, clean.ProjectId, clean.Source, [clean.Id], clean.OccurredAt, clean.OccurredAt, 1);
-            data.Findings[fingerprint] = finding;
-            return finding;
-        }, token);
     }
 
+    private static PreviewFinding RecordClean(WebHostState data, PreviewDiagnostic clean)
+    {
+        var fingerprint = DiagnosticSanitizer.Fingerprint(clean);
+        if (data.Diagnostics.TryGetValue(clean.Id, out var prior))
+        {
+            if (prior != clean) throw new InvalidOperationException("Diagnostic identity was reused with different evidence.");
+            return data.Findings[DiagnosticSanitizer.Fingerprint(prior)];
+        }
+        if (data.Diagnostics.Count >= 10000) throw new InvalidOperationException("Diagnostic storage budget exhausted.");
+        data.Diagnostics.Add(clean.Id, clean);
+        data.DiagnosticSequences.Add(clean.Id, checked(++data.LastDiagnosticSequence));
+        data.DiagnosticRetainUntil.Add(clean.Id, clean.OccurredAt + Retention);
+        var finding = data.Findings.TryGetValue(fingerprint, out var existing)
+            ? existing with
+            {
+                FirstSeen = clean.OccurredAt < existing.FirstSeen ? clean.OccurredAt : existing.FirstSeen,
+                LastSeen = clean.OccurredAt > existing.LastSeen ? clean.OccurredAt : existing.LastSeen,
+                Occurrences = checked(existing.Occurrences + 1), DiagnosticIds = [..existing.DiagnosticIds, clean.Id]
+            }
+            : new PreviewFinding(fingerprint, clean.ProjectId, clean.Source, [clean.Id], clean.OccurredAt, clean.OccurredAt, 1);
+        data.Findings[fingerprint] = finding;
+        return finding;
+    }
     /// <summary>Requires authorization for this exact preview at the caller. Does not require a live VM.</summary>
     public Task<PreviewDiagnosticPage> ReadAsync(Guid previewId, long afterSequence = 0, int limit = 100,
         CancellationToken token = default)

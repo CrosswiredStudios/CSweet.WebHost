@@ -51,6 +51,7 @@ public sealed partial class HyperVProductVmProvider
         {
             if (request.Kind != "diagnostics" || diagnostics.Count > 256)
                 throw new InvalidDataException("Unexpected product diagnostic payload.");
+            var evidence = new List<PreviewDiagnostic>();
             foreach (var diagnostic in diagnostics)
             {
                 if (diagnostic.Sequence < 1 || diagnostic.Summary is null || diagnostic.Source is null ||
@@ -60,10 +61,11 @@ public sealed partial class HyperVProductVmProvider
                     throw new InvalidDataException("Invalid product diagnostic metadata.");
                 var hash = SHA256.HashData(Encoding.UTF8.GetBytes(assignment.AssignmentId.ToString("N")+":"+diagnostic.Sequence));
                 var source = diagnostic.Source == "build" ? "build" : "runtime";
-                await diagnosticStore.RecordAsync(new(new Guid(hash.AsSpan(0,16)),workloadId,spec.ProjectId,spec.BuildId,
+                evidence.Add(new(new Guid(hash.AsSpan(0,16)),workloadId,spec.ProjectId,spec.BuildId,
                     spec.Manifest.SourceRevision,diagnostic.Service,source,diagnostic.Code,diagnostic.Summary,
-                    diagnostic.OccurredAt,false),[],token);
+                    diagnostic.OccurredAt,false));
             }
+            if (evidence.Count > 0) await diagnosticStore.RecordBatchAsync(evidence, [], token);
         }
         if (request.Kind is "initialize" or "status" or "stop")
         {

@@ -14,10 +14,10 @@ public sealed record HyperVProductConfiguration(string StateRoot, string GuestIm
     string ArtifactMediaRoot, string RuntimePayloadRoot, string CertificationPath, string CertificationPublicKeyBase64,
     ResourceBudget HostCapacity, long MaximumArtifactCacheBytes);
 public sealed record ProductVmRecord(Guid AssignmentId, Guid WorkloadId, string VmName, string? VmId,
-    string State, DateTimeOffset ExpiresAt, ResourceBudget Resources, DateTimeOffset? IdleExpiresAt = null);
+    string State, DateTimeOffset ExpiresAt, ResourceBudget Resources, DateTimeOffset? IdleExpiresAt = null, long? PhysicalDiskBytes = null);
 
 public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration configuration,
-    AssignmentVerifier verifier, TimeProvider clock) : IProductVmProvider
+    AssignmentVerifier verifier, TimeProvider clock) : IProductVmProvider, IProductDiagnosticSource
 {
     public const string Id = "webhost-hyperv-gen2";
     public const string Version = "0.1.0";
@@ -57,9 +57,13 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
             throw new InvalidDataException("The product input artifact is missing or corrupt.");
         token.ThrowIfCancellationRequested();
 
+        var bootBytes = JsonSerializer.SerializeToUtf8Bytes(new ProductGuestBoot(1, verifier.Enrollment, assignment), PreviewJson.Options);
+        var physicalDiskBytes = ProductStorageBudget.RequiredBytes(spec.Manifest.Resources,
+            await ReadOsVirtualSizeAsync(token), new FileInfo(inputMedia).Length, bootBytes.Length);
         Directory.CreateDirectory(InstancesRoot);
         // The lock covers physical host admission, VM creation, and committed metadata.
         await using var held = await LockAsync(token);
+        verifier.Verify(assignment); // Waiting for physical admission must not outlive authorization.
         var records = await ReadRecordsAsync(token);
         if (records.Any(x => x.AssignmentId == assignment.AssignmentId || x.WorkloadId == assignment.WorkloadId))
             throw new InvalidOperationException("This product identity already has protected VM history; reconcile it instead of relaunching.");
@@ -67,14 +71,14 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
         var requested = spec.Manifest.Resources;
         if (active.Sum(x => (long)x.Resources.CpuCount) + requested.CpuCount > configuration.HostCapacity.CpuCount ||
             active.Sum(x => (long)x.Resources.MemoryMb) + requested.MemoryMb > configuration.HostCapacity.MemoryMb ||
-            active.Sum(x => (long)x.Resources.DiskMb) + requested.DiskMb > configuration.HostCapacity.DiskMb)
+            physicalDiskBytes > AvailablePhysicalDiskBytes(records))
             throw new InvalidOperationException("The WebHost has insufficient unreserved physical capacity.");
 
         var directory = InstanceDirectory(assignment.WorkloadId);
         Directory.CreateDirectory(directory);
         var vmName = "csweet-webhost-" + assignment.WebHostId.ToString("N") + "-" + assignment.WorkloadId.ToString("N");
         var record = new ProductVmRecord(assignment.AssignmentId, assignment.WorkloadId, vmName, null, "Creating",
-            assignment.ExpiresAt, spec.Manifest.Resources, IdleDeadline(clock.GetUtcNow(), assignment.ExpiresAt));
+            assignment.ExpiresAt, spec.Manifest.Resources, IdleDeadline(clock.GetUtcNow(), assignment.ExpiresAt), physicalDiskBytes);
         await SaveAsync(record, token);
         try
         {
@@ -84,7 +88,7 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
             if (!await SingleFileIso9660.VerifyArtifactDigestAsync(media, spec.Manifest.ArtifactDigest, token))
                 throw new InvalidDataException("The private input media copy failed verification.");
             var bootPath = Path.Combine(directory, "boot.iso");
-            var bootBytes = JsonSerializer.SerializeToUtf8Bytes(new ProductGuestBoot(1, verifier.Enrollment, assignment), PreviewJson.Options);
+
             await using (var bootStream = new MemoryStream(bootBytes))
             await using (var bootMedia = new FileStream(bootPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 await SingleFileIso9660.WriteAsync(bootStream, bootBytes.Length, bootMedia, token);
@@ -131,7 +135,7 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
         await using var held = await LockAsync(token);
         foreach (var record in await ReadRecordsAsync(token))
         {
-            if (record.State == "Destroyed" || (record.ExpiresAt > clock.GetUtcNow() &&
+            if (record.State == "Destroyed" || (record.State != "Creating" && record.ExpiresAt > clock.GetUtcNow() &&
                 (record.IdleExpiresAt ?? record.ExpiresAt) > clock.GetUtcNow())) continue;
             try { await PowerShellHyperV.DestroyAsync(record.VmName); await DeleteDisksAsync(record); }
             catch (Exception error) when (error is IOException or HyperVCommandException or UnauthorizedAccessException)
@@ -180,7 +184,9 @@ public sealed partial class HyperVProductVmProvider(HyperVProductConfiguration c
         if (digest != configuration.GuestImageDigest) throw new InvalidDataException("The product guest image is corrupt.");
         return certificate;
     }
-    private static ProductProviderStatus Unavailable(string reason) => new(Id, Version, "", false, null, false, reason);
+    private ProductProviderStatus Unavailable(string reason) => new(Id, Version,
+        WorkloadAuthorizationEnvelope.IsDigest(configuration.GuestImageDigest) ? configuration.GuestImageDigest : "",
+        false, null, false, reason);
     private static string ProtectedRoot(string path)
     {
         if (!Path.IsPathFullyQualified(path)) throw new InvalidDataException("Runtime state requires an absolute path.");

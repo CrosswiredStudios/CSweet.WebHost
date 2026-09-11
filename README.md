@@ -12,9 +12,10 @@ Implemented code includes:
 - A dedicated Linux product guest for verified ZIP artifacts, static responses, offline image import/build,
   normalized container execution, health checks and sanitized diagnostics. Product commands execute only inside the guest.
 - Bounded guest HTTP forwarding to a fixed local entry point, without host credentials or cookies.
-- Host-side diagnostic binding to the canonical preview, project, build and source revision.
+- Automatic bounded guest diagnostic polling, atomic sanitized snapshots and canonical preview/project/build/source binding.
 - Outbound HTTPS Node heartbeats with a separate operational identity, durable sequence reservation and protected runtime inventory.
 - Signed diagnostic exports after VM teardown, seven-day retention, independent cleanup and 30-minute idle expiry.
+- Persistent physical VM storage reservations, conservative free-space admission and interrupted-creation cleanup.
 - Guest provisioning inputs and behavioral tests.
 
 See [the product runtime boundary](docs/product-runtime.md) for the protocol, installation requirements
@@ -23,8 +24,8 @@ and explicit current limitations.
 Build and test:
 
 ```powershell
-dotnet build CSweet.WebHost.slnx -c Release -p:UseLocalWebHostContracts=true -p:UseLocalIsolation=true
-dotnet test tests/CSweet.WebHost.Tests -c Release -p:UseLocalWebHostContracts=true -p:UseLocalIsolation=true
+dotnet build CSweet.WebHost.slnx -c Release
+dotnet test tests/CSweet.WebHost.Tests -c Release
 ```
 
 Headquarters has a separate grant proposal/owner approval integration. Its current preflight checks
@@ -44,3 +45,5 @@ The Node executable provides `validate <preview.json>`, `status` and `run`. Read
 reports not ready. RuntimeHost code is compiled but not installed. No product VM has been launched.
 The local admission store is not a distributed Headquarters quota service. A claimed assignment
 survives uncertain startup and must be reconciled, never relaunched with a fresh idempotency key.
+
+Sibling checkouts are detected automatically. Clone CSweet.Isolation, CSweet.WebHost.Contracts and CSweet.Office.Contracts beside this repository. Explicit UseLocal properties set to false retain package-only release validation. No NuGet publication is needed for local source builds.

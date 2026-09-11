@@ -17,7 +17,7 @@ public sealed partial class HyperVProductVmProvider
             {
                 CpuCount = (int)Math.Max(0, capacity.CpuCount - active.Sum(x => (long)x.Resources.CpuCount)),
                 MemoryMb = (int)Math.Max(0, capacity.MemoryMb - active.Sum(x => (long)x.Resources.MemoryMb)),
-                DiskMb = (int)Math.Max(0, capacity.DiskMb - active.Sum(x => (long)x.Resources.DiskMb))
+                DiskMb = (int)(AvailablePhysicalDiskBytes(active) / ProductStorageBudget.Megabyte)
             };
         }
         return new(verifier.Enrollment.Id, clock.GetUtcNow(), available, [status]);

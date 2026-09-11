@@ -1,1 +1,13 @@
-<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><LangVersion>latest</LangVersion><TreatWarningsAsErrors>true</TreatWarningsAsErrors><Version>0.1.0</Version><PackageReadmeFile>README.md</PackageReadmeFile></PropertyGroup><ItemGroup><None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" /></ItemGroup></Project>
+<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><LangVersion>latest</LangVersion><TreatWarningsAsErrors>true</TreatWarningsAsErrors><Version>0.1.0</Version><PackageReadmeFile>README.md</PackageReadmeFile></PropertyGroup><ItemGroup><None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" /></ItemGroup>  <PropertyGroup>
+    <!-- Prefer sibling source checkouts; explicit false retains package-only release validation. -->
+    <CSweetIsolationRepositoryRoot Condition="'$(CSweetIsolationRepositoryRoot)' == ''">$(MSBuildThisFileDirectory)..\CSweet.Isolation</CSweetIsolationRepositoryRoot>
+    <UseLocalIsolation Condition="'$(UseLocalIsolation)' == '' and Exists('$(CSweetIsolationRepositoryRoot)\src\CSweet.Isolation.Security\CSweet.Isolation.Security.csproj')">true</UseLocalIsolation>
+    <UseLocalIsolation Condition="'$(UseLocalIsolation)' == ''">false</UseLocalIsolation>
+    <CSweetWebHostContractsRepositoryRoot Condition="'$(CSweetWebHostContractsRepositoryRoot)' == ''">$(MSBuildThisFileDirectory)..\CSweet.WebHost.Contracts</CSweetWebHostContractsRepositoryRoot>
+    <UseLocalWebHostContracts Condition="'$(UseLocalWebHostContracts)' == '' and Exists('$(CSweetWebHostContractsRepositoryRoot)\src\CSweet.WebHost.Contracts\CSweet.WebHost.Contracts.csproj')">true</UseLocalWebHostContracts>
+    <UseLocalWebHostContracts Condition="'$(UseLocalWebHostContracts)' == ''">false</UseLocalWebHostContracts>
+    <CSweetOfficeContractsRepositoryRoot Condition="'$(CSweetOfficeContractsRepositoryRoot)' == ''">$(MSBuildThisFileDirectory)..\CSweet.Office.Contracts</CSweetOfficeContractsRepositoryRoot>
+    <UseLocalOfficeContracts Condition="'$(UseLocalOfficeContracts)' == '' and Exists('$(CSweetOfficeContractsRepositoryRoot)\src\CSweet.Office.Contracts\CSweet.Office.Contracts.csproj')">true</UseLocalOfficeContracts>
+    <UseLocalOfficeContracts Condition="'$(UseLocalOfficeContracts)' == ''">false</UseLocalOfficeContracts>
+  </PropertyGroup>
+</Project>

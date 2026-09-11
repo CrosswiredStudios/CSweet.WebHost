@@ -67,3 +67,44 @@ has not produced or certified a product image and has not launched a product VM.
 - [Compose service settings](https://docs.docker.com/reference/compose-file/services/)
 - [Compose internal networks](https://docs.docker.com/reference/compose-file/networks/)
 - [Compose trust model](https://docs.docker.com/compose/trust-model/)
+
+## Storage admission and recovery
+
+The privileged provider queries the verified standalone VHDX's virtual size with Get-VHD. It reserves
+OS differencing growth, scratch growth, both private media copies, VM memory state and metadata before
+creating any VM. Reservations are durably attached to the protected workload record and released only
+after physical teardown succeeds. An interrupted Creating record is torn down on the next reaper sweep.
+Older active records without a physical reservation block new admission until reconciled or destroyed.
+
+The current reservation is deliberately conservative: twice each disk's full virtual size plus 256 MiB
+per disk, a full memory-sized state allowance plus 64 MiB, exact artifact media length and boot media
+with 64 KiB padding. A small compressed or sparse base image never reduces the OS reservation.
+The configured HostCapacity.DiskMb is the per-host physical reservation budget; the manifest DiskMb
+continues to size the guest's scratch disk. Host heartbeats report remaining physical capacity.
+
+StateRoot and ArtifactMediaRoot must be on the same protected fixed local volume. Admission also keeps
+the full outstanding VM reservations, full MaximumArtifactCacheBytes and a 1 GiB host floor free on
+that volume. It gives no allocation credit for existing sparse/compressed files. This can reject work
+before the disk is full. These checks are admission safeguards, not filesystem quotas: unrelated disk
+writers, live allocation monitoring, boot/restart recovery and real physical bounds still need installer
+and provider certification. The cache has its own bounded ingestion lock and expiry worker.
+
+The Get-VHD inspection follows Microsoft's [Hyper-V storage guidance](https://learn.microsoft.com/en-us/windows-server/administration/performance-tuning/role/hyper-v-server/storage-io-performance).
+
+## Automatic local evidence collection
+
+RuntimeHost polls its owned Ready/Failed guests every 30 seconds, with at most two concurrent polls and
+a ten-second deadline per guest. Initializing guests are excluded to avoid competing with their build
+connection. Collection rechecks the signed assignment and live lease and never extends idle time.
+No Node request or Headquarters connection is required for this local collection.
+
+Each bounded guest snapshot is validated, canonically bound, sanitized and committed in one atomic
+transaction. Repeated snapshots reuse diagnostic identities and do not duplicate events or extend
+retention. Failed retrievals attempt a separately bounded host-generated diagnostic, deduplicated per
+assignment/minute, with no raw transport errors or paths. One failed guest or full evidence store does
+not block polling the others. Service shutdown cancels the sweep.
+
+This is best-effort collection of the guest's bounded ring, not lossless telemetry. A guest dying before
+polling, a burst exceeding the ring, an initialization that never returns, or a host/storage failure can
+still lose evidence. The existing seven-day export survives teardown. Headquarters ingestion, health
+reconciliation, browser telemetry and automatic ticket routing are still required.

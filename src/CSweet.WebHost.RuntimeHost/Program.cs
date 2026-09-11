@@ -34,8 +34,12 @@ builder.Services.AddSingleton<AssignmentLedger>();
 builder.Services.AddSingleton(services => new ProductControlVerifier(config.Enrollment,
     services.GetRequiredService<DurableState>(),TimeProvider.System));
 builder.Services.AddSingleton<DiagnosticStore>();
+builder.Services.AddSingleton<IProductDiagnosticSource>(services => services.GetRequiredService<HyperVProductVmProvider>());
+builder.Services.AddSingleton<ProductDiagnosticCollector>();
+builder.Services.AddHostedService<DiagnosticCollectionWorker>();
 builder.Services.AddHostedService<ProductReaper>();
 builder.Services.AddHostedService<DiagnosticRetentionWorker>();
+builder.Services.AddHostedService<ArtifactRetentionWorker>();
 builder.Services.AddHostedService<ProductRpcWorker>();
 await builder.Build().RunAsync();
 return 0;
@@ -137,7 +141,7 @@ public sealed class ProductRpcWorker(RuntimeHostConfiguration config,HyperVProdu
             await ProductGuestProtocol.WriteAsync(pipe,response,timeout.Token);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or
-            ArgumentException or JsonException or OperationCanceledException or HyperVCommandException or TimeoutException)
+            ArgumentException or JsonException or OperationCanceledException or HyperVCommandException or TimeoutException or System.Net.Sockets.SocketException)
         {
             logger.LogWarning("A WebHost runtime operation was rejected or failed. Reconcile its durable status before retrying.");
             try
